@@ -15,16 +15,38 @@ function parseGeminiJson(output: string): Record<string, unknown> {
   }
 }
 
+function parseSimplePayment(message: string) {
+  const normalized = message.trim().replace(/\s+/g, " ");
+  const amountMatch = normalized.match(/(?:^|\s)(\d+(?:\.\d+)?)\s*(k)?(?:\s|$)/i);
+  if (!amountMatch || amountMatch.index === undefined) return null;
+
+  const amountTaka = Number(amountMatch[1]) * (amountMatch[2] ? 1000 : 1);
+  if (!Number.isFinite(amountTaka) || amountTaka <= 0) return null;
+
+  const beforeAmount = normalized.slice(0, amountMatch.index).trim();
+  const recipientName = beforeAmount
+    .replace(/\s+(ke|কে)$/i, "")
+    .trim() || null;
+
+  return {
+    recipientName,
+    amountTaka,
+    note: null,
+  };
+}
+
 export async function POST(request: Request) {
+  let message = "";
+
   try {
     console.log("GEMINI_API_KEY exists:", Boolean(process.env.GEMINI_API_KEY));
     if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY is missing from .env.local");
 
     const body = await request.json();
-    const message = body.message;
-    if (typeof message !== "string" || !message.trim()) {
+    if (typeof body.message !== "string" || !body.message.trim()) {
       return Response.json({ success: false, message: "Message is required" }, { status: 400 });
     }
+    message = body.message;
 
     const prompt = `
 You are TrustPay's payment intent parser.
@@ -74,6 +96,15 @@ ${JSON.stringify(message)}
     return Response.json({ success: true, draft, missingFields });
   } catch (error) {
     console.error("PARSE PAYMENT FAILED:", error);
+
+    const fallbackDraft = parseSimplePayment(message);
+    if (fallbackDraft) {
+      console.log("Using simple payment parser fallback");
+      const missingFields: string[] = [];
+      if (!fallbackDraft.recipientName) missingFields.push("recipient");
+      return Response.json({ success: true, draft: fallbackDraft, missingFields });
+    }
+
     return Response.json({ success: false, message: "Could not understand payment" }, { status: 500 });
   }
 }
